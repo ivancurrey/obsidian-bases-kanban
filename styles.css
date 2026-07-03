@@ -155,13 +155,11 @@
 	height: auto;
 }
 
-/* Collapsed lane: cap the column body at about 30% less than the original
-   420px height and scroll within the
-   column. The lane and column themselves stay flexible — only the card
-   container is capped. */
-.obk-swimlane--collapsed .obk-column-body {
-	max-height: 294px;
-	overflow-y: auto;
+/* Collapsed lane: hide the lane body entirely so only the header row
+   (title, count, toggle) remains visible. Capping the body height instead
+   was a visual no-op for lanes shorter than the cap. */
+.obk-swimlane--collapsed .obk-swimlane-body {
+	display: none;
 }
 
 .obk-swimlane-toggle {

@@ -292,6 +292,63 @@ describe('Swimlane rendering behavior', () => {
 	});
 });
 
+describe('Swimlane collapse lifecycle', () => {
+	// In production, config.set() rewrites the .base file and Bases calls
+	// onDataUpdated() again. Wire that feedback loop so these tests exercise
+	// the re-render that immediately follows every toggle click.
+	function wireConfigFeedback(view: KanbanView, controller: any): void {
+		const origSet = controller.config.set.bind(controller.config);
+		controller.config.set = (key: string, value: unknown) => {
+			origSet(key, value);
+			view.onDataUpdated();
+		};
+	}
+
+	test('collapsed class survives the re-render triggered by its own persistence', () => {
+		const { view, controller } = createSwimlaneView(() => PROPERTY_PRIORITY);
+		triggerDataUpdate(view);
+		wireConfigFeedback(view, controller);
+
+		const lane = getLane(view, 'High');
+		const toggle = lane.querySelector<HTMLElement>(`.${CSS_CLASSES.SWIMLANE_TOGGLE}`);
+		assert.ok(toggle, 'Expected collapse toggle to exist');
+		toggle.click();
+		assert.ok(lane.classList.contains(CSS_CLASSES.SWIMLANE_COLLAPSED), 'Class applied at click time');
+
+		// Flush the debounced re-render caused by the click's own config.set()
+		triggerDataUpdate(view);
+
+		const laneAfter = getLane(view, 'High');
+		assert.ok(
+			laneAfter.classList.contains(CSS_CLASSES.SWIMLANE_COLLAPSED),
+			'Collapsed class must survive the post-toggle re-render',
+		);
+		const toggleAfter = laneAfter.querySelector<HTMLElement>(`.${CSS_CLASSES.SWIMLANE_TOGGLE}`);
+		assert.strictEqual(toggleAfter?.getAttribute('aria-expanded'), 'false');
+	});
+
+	test('persisted collapse state is applied on a fresh view first render', () => {
+		// Simulates an app restart: a brand-new view constructed over a config
+		// that already contains collapsedLanes from a previous session.
+		const scopedKey = `${PROPERTY_STATUS}${SWIMLANE_KEY_SEPARATOR}${PROPERTY_PRIORITY}`;
+		const { view, controller } = createSwimlaneView(() => PROPERTY_PRIORITY);
+		controller.config.set('collapsedLanes', { [scopedKey]: ['High'] });
+		triggerDataUpdate(view);
+
+		const highLane = getLane(view, 'High');
+		assert.ok(
+			highLane.classList.contains(CSS_CLASSES.SWIMLANE_COLLAPSED),
+			'Persisted collapse state must be applied on the initial render',
+		);
+		const toggle = highLane.querySelector<HTMLElement>(`.${CSS_CLASSES.SWIMLANE_TOGGLE}`);
+		assert.strictEqual(toggle?.getAttribute('aria-expanded'), 'false');
+		assert.strictEqual(getToggleIcon(toggle), 'chevron-right');
+
+		const lowLane = getLane(view, 'Low');
+		assert.ok(!lowLane.classList.contains(CSS_CLASSES.SWIMLANE_COLLAPSED), 'Other lanes stay expanded');
+	});
+});
+
 describe('Swimlane patch path', () => {
 	test('second render reuses existing lane elements (no full teardown)', () => {
 		const { view } = createSwimlaneView(() => PROPERTY_PRIORITY);
