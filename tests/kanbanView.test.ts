@@ -10,6 +10,7 @@ import {
 	SORTED_CARD_ORDER_NOTICE,
 	UNCATEGORIZED_LABEL,
 } from '../src/constants.ts';
+import { propertyDataSlug } from '../src/components/card.ts';
 import { isCardOrders, KanbanView } from '../src/kanbanView.ts';
 import { normalizePropertyValue } from '../src/utils/grouping.ts';
 import {
@@ -2121,6 +2122,61 @@ describe('Data Rendering - Card Properties', () => {
 			'High',
 			'Value should show property value',
 		);
+	});
+
+	test('exposes visible and group-by property values as data-prop-* attributes', () => {
+		const entries = createEntriesWithMixedProperties();
+		controller = createMockQueryController(entries, TEST_PROPERTIES);
+		controller.app = app;
+		controller.config.getAsPropertyId = (): string => PROPERTY_STATUS;
+		controller.config.getOrder = (): string[] => [PROPERTY_STATUS, PROPERTY_PRIORITY];
+		controller.config.getDisplayName = (id: string): string => id;
+
+		const view = new KanbanView(controller, scrollEl);
+		setupKanbanViewWithApp(view, app);
+		triggerDataUpdate(view);
+
+		const cards = Array.from(view.containerEl.querySelectorAll('.obk-card'));
+		const taskACard = cards.find((c) => c.getAttribute('data-entry-path') === 'Task A.md') as HTMLElement;
+		assert.ok(taskACard, 'Card for Task A should exist');
+
+		assert.strictEqual(taskACard.getAttribute('data-prop-priority'), 'High', 'Visible property value exposed');
+		assert.strictEqual(taskACard.getAttribute('data-prop-status'), 'To Do', 'Group-by property value exposed');
+	});
+
+	test('data-prop-* attributes update when a property value changes', () => {
+		const props: Record<string, unknown> = {
+			[PROPERTY_STATUS]: 'To Do',
+			[PROPERTY_PRIORITY]: 'High',
+		};
+		const entries = [createMockBasesEntry(createMockTFile('Task A.md'), props)];
+		controller = createMockQueryController(entries, TEST_PROPERTIES);
+		controller.app = app;
+		controller.config.getAsPropertyId = (): string => PROPERTY_STATUS;
+		controller.config.getOrder = (): string[] => [PROPERTY_STATUS, PROPERTY_PRIORITY];
+		controller.config.getDisplayName = (id: string): string => id;
+
+		const view = new KanbanView(controller, scrollEl);
+		setupKanbanViewWithApp(view, app);
+		triggerDataUpdate(view);
+
+		const card = view.containerEl.querySelector('.obk-card') as HTMLElement;
+		assert.strictEqual(card.getAttribute('data-prop-priority'), 'High');
+
+		// A frontmatter edit changes the value; the fingerprint diff in the
+		// patch path must rebuild the card with the fresh attribute.
+		props[PROPERTY_PRIORITY] = 'Low';
+		triggerDataUpdate(view);
+
+		const cardAfter = view.containerEl.querySelector('.obk-card') as HTMLElement;
+		assert.strictEqual(cardAfter.getAttribute('data-prop-priority'), 'Low', 'Attribute reflects the new value');
+	});
+
+	test('propertyDataSlug strips prefixes and sanitizes ids', () => {
+		assert.strictEqual(propertyDataSlug('note.priority' as BasesPropertyId), 'priority');
+		assert.strictEqual(propertyDataSlug('formula.Due Date' as BasesPropertyId), 'due-date');
+		assert.strictEqual(propertyDataSlug('file.name' as BasesPropertyId), 'file-name');
+		assert.strictEqual(propertyDataSlug('note.???' as BasesPropertyId), '');
 	});
 
 	test('does not render the group-by property as a card property', () => {

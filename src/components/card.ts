@@ -22,6 +22,45 @@ export interface CardCallbacks {
 	onOpenInBackgroundTab: (file: TFile) => void;
 }
 
+/**
+ * Converts a property id into a data-attribute-safe slug: strips the
+ * note./formula. prefix, lowercases, and collapses anything outside
+ * [a-z0-9-] into single hyphens (e.g. 'note.priority' → 'priority',
+ * 'file.name' → 'file-name'). Returns '' when nothing survives.
+ */
+export function propertyDataSlug(propertyId: BasesPropertyId): string {
+	return String(propertyId)
+		.replace(/^(note|formula)\./, '')
+		.toLowerCase()
+		.replace(/[^a-z0-9-]+/g, '-')
+		.replace(/^-+|-+$/g, '');
+}
+
+/**
+ * Exposes property values as data-prop-* attributes on the card element so
+ * user CSS snippets can style cards by value, e.g.
+ * `.obk-card[data-prop-priority="High"] { … }`. Covers the visible
+ * properties plus the group-by property (which the display loop skips).
+ *
+ * Staleness: computeCardFingerprint includes every ctx.order value, so the
+ * patch path rebuilds the card (and these attributes) when a visible value
+ * changes. A group-by value change moves the entry to another column, where
+ * the card is created fresh — so the group attribute stays in sync too.
+ */
+export function applyCardDataAttributes(cardEl: HTMLElement, entry: BasesEntry, ctx: CardRenderCtx): void {
+	const propertyIds = new Set<BasesPropertyId>(ctx.order);
+	if (ctx.groupByPropertyId) propertyIds.add(ctx.groupByPropertyId);
+	for (const propertyId of propertyIds) {
+		const slug = propertyDataSlug(propertyId);
+		if (!slug) continue;
+		const value = entry.getValue(propertyId);
+		if (!value || value instanceof NullValue) continue;
+		const text = value.toString().trim();
+		if (!text) continue;
+		cardEl.setAttribute(`data-prop-${slug}`, text);
+	}
+}
+
 export function computeCardFingerprint(entry: BasesEntry, ctx: CardRenderCtx): string {
 	const parts: string[] = [];
 	for (const propId of ctx.order) {
@@ -92,6 +131,7 @@ export function createCard(entry: BasesEntry, ctx: CardRenderCtx, cb: CardCallba
 	cardEl.className = CSS_CLASSES.CARD;
 	const filePath = entry.file.path;
 	cardEl.setAttribute(DATA_ATTRIBUTES.ENTRY_PATH, filePath);
+	applyCardDataAttributes(cardEl, entry, ctx);
 
 	if (ctx.imagePropertyId) {
 		const coverEl = cardEl.createDiv({ cls: CSS_CLASSES.CARD_COVER });
