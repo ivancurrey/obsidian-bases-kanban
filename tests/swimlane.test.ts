@@ -570,3 +570,87 @@ describe('Swimlane empty-column remove button (#90)', () => {
 		);
 	});
 });
+
+describe('Swimlane header links', () => {
+	interface HubSpec {
+		path: string;
+		frontmatter: Record<string, unknown>;
+	}
+
+	function mountWithVault(
+		hubs: HubSpec[],
+		seed?: (controller: any) => void,
+	): { view: KanbanView; controller: any; app: any } {
+		const scrollEl = createDivWithMethods();
+		const controller: any = createMockQueryController(createSwimlaneEntries(), TEST_PROPERTIES);
+		const app: any = createMockApp();
+		controller.app = app;
+		controller.config.getAsPropertyId = (key: string) => {
+			if (key === 'groupByProperty') return PROPERTY_STATUS;
+			if (key === 'swimlaneByProperty') return PROPERTY_PRIORITY;
+			return null;
+		};
+		if (seed) seed(controller);
+
+		// Vault surface for the resolver: member notes are typed `task`; hub
+		// candidates come from the caller. All metadata flows through
+		// metadataCache (no file reads).
+		const memberPaths = ['Task A.md', 'Task B.md', 'Task C.md'];
+		const caches: Record<string, { frontmatter: Record<string, unknown> } | undefined> = {};
+		for (const path of memberPaths) caches[path] = { frontmatter: { type: 'task' } };
+		for (const hub of hubs) caches[hub.path] = { frontmatter: hub.frontmatter };
+		const files = [...memberPaths, ...hubs.map((hub) => hub.path)].map((path) => createMockTFile(path));
+		app.vault.getMarkdownFiles = () => files;
+		app.metadataCache.getFileCache = (file: { path: string }) => caches[file.path] ?? null;
+
+		const view = new KanbanView(controller, scrollEl);
+		setupKanbanViewWithApp(view, app);
+		triggerDataUpdate(view);
+		return { view, controller, app };
+	}
+
+	function getLaneTitleLink(view: KanbanView, laneValue: string): HTMLElement | null {
+		return getLane(view, laneValue).querySelector<HTMLElement>(`.${CSS_CLASSES.SWIMLANE_TITLE_LINK}`);
+	}
+
+	test('lane header becomes a link when a hub note resolves; unresolvable lanes stay plain', () => {
+		const { view, app } = mountWithVault([
+			{ path: 'Accounts/High.md', frontmatter: { type: 'account', priority: 'High' } },
+		]);
+
+		const link = getLaneTitleLink(view, 'High');
+		assert.ok(link, 'High lane title should render as a link');
+		assert.strictEqual(link.getAttribute('data-href'), 'Accounts/High.md');
+		assert.strictEqual(link.textContent, 'High');
+
+		link.click();
+		assert.deepStrictEqual(app.workspace.openLinkText.calls[0]?.slice(0, 2), ['Accounts/High.md', '']);
+
+		assert.strictEqual(getLaneTitleLink(view, 'Low'), null, 'Low lane has no hub note; title stays plain');
+		const lowTitle = getLane(view, 'Low').querySelector(`.${CSS_CLASSES.SWIMLANE_TITLE}`);
+		assert.strictEqual(lowTitle?.textContent, 'Low');
+	});
+
+	test('notes sharing the board member type are not treated as hubs', () => {
+		const { view } = mountWithVault([{ path: 'Archive/Old task.md', frontmatter: { type: 'task', priority: 'High' } }]);
+		assert.strictEqual(getLaneTitleLink(view, 'High'), null, 'A task-typed note must not become a lane link');
+	});
+
+	test('type "account" is preferred over other candidate types', () => {
+		const { view } = mountWithVault([
+			{ path: 'CRM/High hub.md', frontmatter: { type: 'crm-hub', priority: 'High' } },
+			{ path: 'Accounts/High.md', frontmatter: { type: 'account', priority: 'High' } },
+		]);
+		assert.strictEqual(getLaneTitleLink(view, 'High')?.getAttribute('data-href'), 'Accounts/High.md');
+	});
+
+	test('swimlaneHeaderLinks: false renders plain titles even when a hub exists', () => {
+		const { view } = mountWithVault(
+			[{ path: 'Accounts/High.md', frontmatter: { type: 'account', priority: 'High' } }],
+			(c) => c.config.set('swimlaneHeaderLinks', false),
+		);
+		assert.strictEqual(getLaneTitleLink(view, 'High'), null);
+		const title = getLane(view, 'High').querySelector(`.${CSS_CLASSES.SWIMLANE_TITLE}`);
+		assert.strictEqual(title?.textContent, 'High');
+	});
+});

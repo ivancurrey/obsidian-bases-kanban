@@ -120,6 +120,17 @@
 	font-weight: 500;
 }
 
+/* Lane title link to the lane's hub note (e.g. its account page) */
+.obk-swimlane-title-link {
+	color: var(--text-accent);
+	text-decoration: none;
+	cursor: pointer;
+}
+
+.obk-swimlane-title-link:hover {
+	text-decoration: underline;
+}
+
 .obk-swimlane-body {
 	display: flex;
 	align-items: stretch;

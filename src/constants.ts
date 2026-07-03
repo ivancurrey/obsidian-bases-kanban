@@ -57,6 +57,7 @@ export const CSS_CLASSES = {
 	SWIMLANE_COLLAPSED: 'obk-swimlane--collapsed',
 	SWIMLANE_HEADER: 'obk-swimlane-header',
 	SWIMLANE_TITLE: 'obk-swimlane-title',
+	SWIMLANE_TITLE_LINK: 'obk-swimlane-title-link',
 	SWIMLANE_COUNT: 'obk-swimlane-count',
 	SWIMLANE_BODY: 'obk-swimlane-body',
 	SWIMLANE_TOGGLE: 'obk-swimlane-toggle',

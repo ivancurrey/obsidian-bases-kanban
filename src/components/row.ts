@@ -5,12 +5,15 @@ import { createColumn, type ColumnRenderCtx, type ColumnCallbacks } from './colu
 
 export interface RowRenderCtx extends ColumnRenderCtx {
 	collapsedLanes: Set<string>;
+	laneHeaderLinks: boolean;
 }
 
 export interface RowCallbacks extends ColumnCallbacks {
 	onToggleCollapsed: (laneValue: string, laneEl: HTMLElement, toggleBtn: HTMLElement) => void;
 	attachCardSortable: (cardBody: HTMLElement, key: string) => void;
 	cardOrderKey: (laneValue: string, columnValue: string) => string;
+	resolveLaneNotePath: (laneValue: string) => string | null;
+	onOpenLaneNote: (path: string, evt: MouseEvent) => void;
 }
 
 export function updateSwimlaneToggle(toggleBtn: HTMLElement, isCollapsed: boolean): void {
@@ -58,7 +61,26 @@ export function buildSwimlaneElement(
 	const dragHandle = headerEl.createDiv({ cls: CSS_CLASSES.SWIMLANE_DRAG_HANDLE });
 	dragHandle.textContent = '⋮⋮';
 	dragHandle.setAttribute('aria-label', `Drag to reorder lane: ${laneValue}`);
-	headerEl.createSpan({ text: laneValue, cls: CSS_CLASSES.SWIMLANE_TITLE });
+	// Lane title: rendered as a link to the lane's "hub note" (e.g. the account
+	// page a lane value points at) when one resolves; plain text otherwise.
+	// The link is scoped to the title span only so header drag/toggle behavior
+	// is unaffected.
+	const hubPath = ctx.laneHeaderLinks ? cb.resolveLaneNotePath(laneValue) : null;
+	if (hubPath) {
+		const titleEl = headerEl.createSpan({ cls: CSS_CLASSES.SWIMLANE_TITLE });
+		const linkEl = titleEl.createEl('a', {
+			text: laneValue,
+			cls: CSS_CLASSES.SWIMLANE_TITLE_LINK,
+			attr: { 'data-href': hubPath, href: hubPath, 'aria-label': `Open ${hubPath}` },
+		});
+		linkEl.addEventListener('click', (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			cb.onOpenLaneNote(hubPath, e);
+		});
+	} else {
+		headerEl.createSpan({ text: laneValue, cls: CSS_CLASSES.SWIMLANE_TITLE });
+	}
 	const laneCount = orderedColumnValues.reduce((sum, col) => sum + (laneEntries.get(col)?.length ?? 0), 0);
 	headerEl.createSpan({ text: `${laneCount}`, cls: CSS_CLASSES.SWIMLANE_COUNT });
 	const toggleBtn = headerEl.createEl('button', {

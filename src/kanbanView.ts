@@ -141,6 +141,7 @@ export class KanbanView extends BasesView {
 	private _lastImageAspectRatio: number | undefined = undefined;
 	private _lastSwimlanePropertyId: BasesPropertyId | null | undefined = undefined;
 	private _lastQuickAddFolder: string | null | undefined = undefined;
+	private _lastLaneHeaderLinks: boolean | undefined = undefined;
 	private _cardFingerprints: Map<string, string> = new Map();
 	// Column values empty across the whole board (every swimlane). Recomputed each
 	// render() and read via _buildColumnCtx so components can show a remove button
@@ -512,6 +513,10 @@ export class KanbanView extends BasesView {
 			const quickAddFolderChanged = currentQuickAddFolder !== this._lastQuickAddFolder;
 			this._lastQuickAddFolder = currentQuickAddFolder;
 
+			const currentLaneHeaderLinks = this.isLaneHeaderLinksEnabled();
+			const laneHeaderLinksChanged = currentLaneHeaderLinks !== this._lastLaneHeaderLinks;
+			this._lastLaneHeaderLinks = currentLaneHeaderLinks;
+
 			const existingBoard = this.containerEl.querySelector<HTMLElement>(`.${CSS_CLASSES.BOARD}`);
 			const optionsChanged =
 				orderChanged ||
@@ -521,7 +526,8 @@ export class KanbanView extends BasesView {
 				imageFitChanged ||
 				imageAspectRatioChanged ||
 				swimlanePropertyChanged ||
-				quickAddFolderChanged;
+				quickAddFolderChanged ||
+				laneHeaderLinksChanged;
 
 			const lanes = new Map<string | null, Map<string, BasesEntry[]>>();
 			if (groupedByLane) {
@@ -633,6 +639,7 @@ export class KanbanView extends BasesView {
 		return {
 			...this._buildColumnCtx(),
 			collapsedLanes: this._prefs.collapsedLanes,
+			laneHeaderLinks: this.isLaneHeaderLinksEnabled(),
 		};
 	}
 
@@ -642,7 +649,65 @@ export class KanbanView extends BasesView {
 			onToggleCollapsed: (laneVal, laneEl, toggleBtn) => this.toggleSwimlaneCollapsed(laneVal, laneEl, toggleBtn),
 			attachCardSortable: (body, key) => this.attachCardSortable(body, key),
 			cardOrderKey: (laneVal, colVal) => this.cardOrderKey(laneVal, colVal),
+			resolveLaneNotePath: (laneVal) => this.resolveLaneNotePath(laneVal),
+			onOpenLaneNote: (path, evt) => {
+				if (!this.app?.workspace) return;
+				void this.app.workspace.openLinkText(path, '', Keymap.isModEvent(evt));
+			},
 		};
+	}
+
+	private isLaneHeaderLinksEnabled(): boolean {
+		return this.config?.get('swimlaneHeaderLinks') !== false;
+	}
+
+	/**
+	 * Resolve a lane value to its "hub note" — the note the lane is about
+	 * (e.g. the account page for an account-slug lane). A hub note is the
+	 * first markdown file whose frontmatter <swimlaneProperty> equals the lane
+	 * value and whose own frontmatter `type` differs from the board members'
+	 * types (a note of type `account` is preferred when several match). Reads
+	 * only metadataCache — no file I/O.
+	 */
+	private resolveLaneNotePath(laneValue: string): string | null {
+		if (laneValue === UNCATEGORIZED_LABEL) return null;
+		if (
+			typeof this.app?.vault?.getMarkdownFiles !== 'function' ||
+			typeof this.app?.metadataCache?.getFileCache !== 'function'
+		) {
+			return null;
+		}
+		const swimlanePropertyId = this._prefsSwimlanePropertyId;
+		if (!swimlanePropertyId) return null;
+		const parsed = parsePropertyId(swimlanePropertyId);
+		if (parsed.type !== 'note' || !parsed.name) return null;
+		const propertyName = parsed.name;
+
+		// The board members' own `type` values: a hub must be a different kind
+		// of note, so a filtered-out task never becomes a lane link target.
+		const memberTypes = new Set<string>();
+		this._entryMap.forEach((entry) => {
+			const type: unknown = this.app.metadataCache.getFileCache(entry.file)?.frontmatter?.type;
+			if (typeof type === 'string' && type) memberTypes.add(type);
+		});
+
+		let firstMatch: string | null = null;
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			if (this._entryMap.has(file.path)) continue;
+			const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+			if (!frontmatter) continue;
+			const raw: unknown = frontmatter[propertyName];
+			const matchesLane = (value: unknown): boolean =>
+				(typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') &&
+				String(value) === laneValue;
+			const matches = Array.isArray(raw) ? raw.some(matchesLane) : matchesLane(raw);
+			if (!matches) continue;
+			const noteType = typeof frontmatter.type === 'string' ? frontmatter.type : null;
+			if (noteType !== null && memberTypes.has(noteType)) continue;
+			if (noteType === 'account') return file.path;
+			firstMatch = firstMatch ?? file.path;
+		}
+		return firstMatch;
 	}
 
 	private _buildSwimlaneElement(
@@ -1647,6 +1712,12 @@ export class KanbanView extends BasesView {
 				displayName: 'Strict membership (block drops of outside notes)',
 				type: 'toggle',
 				key: 'strictMembership',
+				default: true,
+			},
+			{
+				displayName: 'Swimlane header links',
+				type: 'toggle',
+				key: 'swimlaneHeaderLinks',
 				default: true,
 			},
 		];
