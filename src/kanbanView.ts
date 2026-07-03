@@ -72,6 +72,9 @@ function isDragManagerDraggable(value: unknown): value is DragManagerDraggable {
 	return isRecord(value) && typeof value.type === 'string';
 }
 
+/** Class of the container Obsidian core binds its bases drop zone to. */
+const CORE_BASES_VIEW_CLASS = 'bases-view';
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null;
 }
@@ -177,6 +180,13 @@ export class KanbanView extends BasesView {
 	private _dragging = false;
 	private _activeCardPath: string | null = null;
 
+	// External-drag guard plumbing: the guarded element (the .bases-view
+	// ancestor, which outlives this view) plus stable handler references so
+	// the capture listeners can be detached on unload or setting change.
+	private _dropGuardEl: HTMLElement | null = null;
+	private readonly _dragGuardOver = (evt: DragEvent): void => this.handleExternalDrag(evt, false);
+	private readonly _dragGuardDrop = (evt: DragEvent): void => this.handleExternalDrag(evt, true);
+
 	constructor(controller: QueryController, scrollEl: HTMLElement, legacyData: LegacyData | null = null) {
 		super(controller);
 		this.scrollEl = scrollEl;
@@ -224,12 +234,28 @@ export class KanbanView extends BasesView {
 		// the base's filters (it can even move the file into a filter-implied
 		// folder). On a kanban that is far too easy to trigger by accident.
 		// Core's DragManager skips events whose default is already prevented,
-		// so claiming external drags here (scrollEl is a descendant of the drop
-		// zone) neutralizes the write. See handleExternalDrag.
-		const dragGuard = (evt: DragEvent) => this.handleExternalDrag(evt, false);
-		this.scrollEl.addEventListener('dragover', dragGuard);
-		this.scrollEl.addEventListener('dragenter', dragGuard);
-		this.scrollEl.addEventListener('drop', (evt: DragEvent) => this.handleExternalDrag(evt, true));
+		// so claiming external drags before its listeners run neutralizes the
+		// write. See _ensureExternalDropGuard / handleExternalDrag.
+		this._ensureExternalDropGuard();
+
+		// Cancel native drags that originate from links rendered inside the
+		// board. Browsers treat anchors as draggable, so grabbing a rendered
+		// [[wikilink]] in a card starts a native link drag while Sortable has
+		// already marked the surrounding card as Sortable.dragged (it does so
+		// on plain mousedown) — making that link drag indistinguishable from a
+		// card drag at drop time. Cancelling at the source removes the
+		// ambiguity: cards are dragged by their surface, links are clicked.
+		this.containerEl.addEventListener(
+			'dragstart',
+			(evt) => {
+				if (!this.isStrictMembershipEnabled()) return;
+				if (evt.target instanceof Element && evt.target.closest('a')) {
+					evt.preventDefault();
+					evt.stopPropagation();
+				}
+			},
+			{ capture: true },
+		);
 
 		this._debouncedRender = debounce(() => {
 			try {
@@ -243,6 +269,45 @@ export class KanbanView extends BasesView {
 
 	onDataUpdated(): void {
 		this._debouncedRender();
+	}
+
+	onunload(): void {
+		// The guard lives on the shared .bases-view ancestor, which outlives
+		// this view (core swaps view estates inside it) — detach explicitly.
+		this._detachExternalDropGuard();
+	}
+
+	/**
+	 * (Re)attach the external-drag guard in CAPTURE phase on the closest
+	 * `.bases-view` ancestor — the element Obsidian core's drop zone is bound
+	 * to (bubble phase). Capture on that element runs before core's listeners
+	 * for a drop anywhere in the view, including chrome outside the plugin's
+	 * own container (toolbar strip, container padding, areas exposed by
+	 * collapsed lanes). Falls back to the plugin's own outermost element when
+	 * the ancestor is missing (detached construction); re-checked on every
+	 * render because the view may be built before it is attached to the DOM.
+	 */
+	private _ensureExternalDropGuard(): void {
+		// Off = pure upstream behavior: no listeners at all.
+		const target = this.isStrictMembershipEnabled()
+			? (this.containerEl.closest<HTMLElement>(`.${CORE_BASES_VIEW_CLASS}`) ?? this.containerEl)
+			: null;
+		if (target === this._dropGuardEl) return;
+		this._detachExternalDropGuard();
+		if (!target) return;
+		target.addEventListener('dragover', this._dragGuardOver, { capture: true });
+		target.addEventListener('dragenter', this._dragGuardOver, { capture: true });
+		target.addEventListener('drop', this._dragGuardDrop, { capture: true });
+		this._dropGuardEl = target;
+	}
+
+	private _detachExternalDropGuard(): void {
+		const el = this._dropGuardEl;
+		if (!el) return;
+		el.removeEventListener('dragover', this._dragGuardOver, { capture: true });
+		el.removeEventListener('dragenter', this._dragGuardOver, { capture: true });
+		el.removeEventListener('drop', this._dragGuardDrop, { capture: true });
+		this._dropGuardEl = null;
 	}
 
 	private loadConfig(): void {
@@ -382,6 +447,12 @@ export class KanbanView extends BasesView {
 
 	private render(): void {
 		try {
+			// The view can be constructed before its container is attached under
+			// the .bases-view ancestor, and the strict-membership setting can
+			// change between renders — re-resolve the guard target each pass
+			// (no-op when nothing changed).
+			this._ensureExternalDropGuard();
+
 			const entries = this.data?.data || [];
 			const availablePropertyIds = this.allProperties || [];
 
@@ -1575,32 +1646,68 @@ export class KanbanView extends BasesView {
 	}
 
 	/**
+	 * A drag Sortable genuinely owns: `Sortable.dragged` is assigned on plain
+	 * mousedown (in _prepareDragStart, before any drag exists), so its mere
+	 * presence is NOT enough — the dragged element must also be one of this
+	 * board's Sortable items (card, column or lane). Anchor-origin native
+	 * drags are cancelled at dragstart (see the constructor), so any surviving
+	 * native drag session that began on a board item belongs to Sortable.
+	 */
+	private isInternalSortableDrag(): boolean {
+		const dragged: HTMLElement | null = Sortable.dragged;
+		if (!dragged?.classList) return false;
+		return (
+			dragged.classList.contains(CSS_CLASSES.CARD) ||
+			dragged.classList.contains(CSS_CLASSES.COLUMN) ||
+			dragged.classList.contains(CSS_CLASSES.SWIMLANE)
+		);
+	}
+
+	/**
+	 * Best-effort identification of an external drop for the Notice text only —
+	 * never part of the claim decision. Reads the private dragManager payload
+	 * and the dataTransfer file list defensively.
+	 */
+	private describeExternalDrop(evt: DragEvent): { name: string; isMember: boolean } {
+		try {
+			const refs = this.getDraggedNoteRefs(this.getDragManagerDraggable());
+			if (refs && refs.length > 0) {
+				const nonMember = refs.find((ref) => !this._entryMap.has(ref.path));
+				if (!nonMember) return { name: refs[0].basename, isMember: true };
+				return { name: nonMember.basename, isMember: false };
+			}
+			const osFileName = evt.dataTransfer?.files?.[0]?.name;
+			if (osFileName) return { name: osFileName, isMember: false };
+		} catch (error) {
+			console.warn('KanbanView: could not identify dragged item', error);
+		}
+		return { name: 'Dropped item', isMember: false };
+	}
+
+	/**
 	 * Strict membership guard. Obsidian core's bases drop zone (on the
 	 * ancestor `.bases-view` element) rewrites a dropped note's frontmatter to
-	 * satisfy the base's filters. When strict membership is enabled (default),
-	 * external note/file drags over the board are claimed here instead: core's
-	 * DragManager skips events whose default is already prevented, so nothing
-	 * gets written. In-board Sortable drags (cards, columns, lanes) and
-	 * non-file drags pass through untouched.
+	 * satisfy the base's filters — for any file/link/bookmark drag it can
+	 * classify. Classifying drags ourselves proved unreliable in production
+	 * (dragManager payload shape/timing varies), so the guard is default-deny:
+	 * EVERY drag is claimed before core's listeners run, except drags Sortable
+	 * verifiably owns (in-board card/column/lane moves). Core's DragManager
+	 * skips events whose default is already prevented, so nothing gets
+	 * written. Listeners are only attached while strict membership is enabled.
 	 */
 	private handleExternalDrag(evt: DragEvent, isDrop: boolean): void {
 		if (!this.isStrictMembershipEnabled()) return;
-		if (Sortable.dragged) return; // in-board card/column/lane drag
-		const noteRefs = this.getDraggedNoteRefs(this.getDragManagerDraggable());
-		const osFiles = evt.dataTransfer && Array.from(evt.dataTransfer.types ?? []).includes('Files');
-		if (noteRefs === null && !osFiles) return; // not a drag core would act on
+		if (this.isInternalSortableDrag()) return;
 
 		evt.preventDefault();
 		evt.stopPropagation();
 		if (!isDrop) return;
 
-		const refs = noteRefs ?? [];
-		const nonMember = refs.find((ref) => !this._entryMap.has(ref.path));
-		if (refs.length > 0 && !nonMember) {
-			new Notice(`${refs[0].basename} is already on this board — drag its card to move it`);
+		const { name, isMember } = this.describeExternalDrop(evt);
+		if (isMember) {
+			new Notice(`${name} is already on this board — drag its card to move it`);
 			return;
 		}
-		const name = nonMember?.basename ?? evt.dataTransfer?.files?.[0]?.name ?? 'Dropped file';
 		new Notice(`${name} is not a member of this base — no changes made`);
 	}
 

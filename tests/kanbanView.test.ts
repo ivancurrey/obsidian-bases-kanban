@@ -4121,6 +4121,7 @@ describe('External drop guard (strict membership)', () => {
 		// Core renders every Bases view inside a `.bases-view` container that
 		// carries the drop zone; model that ancestor relationship here.
 		basesViewEl = document.createElement('div');
+		basesViewEl.className = 'bases-view';
 		scrollEl = createDivWithMethods();
 		basesViewEl.appendChild(scrollEl);
 		controller = createMockQueryController(createEntriesWithStatus(), TEST_PROPERTIES);
@@ -4148,11 +4149,11 @@ describe('External drop guard (strict membership)', () => {
 		return seen;
 	}
 
-	function dispatchDragEvent(view: KanbanView, type: string): Event {
+	function dispatchDragEvent(view: KanbanView, type: string, targetEl?: HTMLElement): Event {
 		const evt = new (window as any).Event(type, { bubbles: true, cancelable: true });
-		const board = view.containerEl.querySelector('.obk-board') as HTMLElement;
-		assert.ok(board, 'Board should exist');
-		board.dispatchEvent(evt);
+		const target = targetEl ?? (view.containerEl.querySelector('.obk-board') as HTMLElement);
+		assert.ok(target, 'Dispatch target should exist');
+		target.dispatchEvent(evt);
 		return evt;
 	}
 
@@ -4212,7 +4213,10 @@ describe('External drop guard (strict membership)', () => {
 		]);
 	});
 
-	test('non-file drags (e.g. text selection) pass through untouched', () => {
+	test('drags with no identifiable payload are still claimed (default-deny)', () => {
+		// The production bypass: dragging a rendered [[wikilink]] out of a card
+		// produced a drag our classifier could not attribute at drop time
+		// (dragManager payload null/cleared). Default-deny claims it anyway.
 		const view = mountView();
 		const core = attachCoreDropZone();
 		app.dragManager = { draggable: null };
@@ -4220,26 +4224,52 @@ describe('External drop guard (strict membership)', () => {
 
 		const dropEvt = dispatchDragEvent(view, 'drop');
 
-		assert.ok(!dropEvt.defaultPrevented, 'Guard must not claim non-file drags');
-		assert.strictEqual(core.dropHandled, 1, 'Event reaches the core zone unchanged');
-		assert.deepStrictEqual(noticeMessages().slice(noticeStart), []);
+		assert.ok(dropEvt.defaultPrevented, 'Unidentifiable drags must be claimed');
+		assert.strictEqual(core.dropHandled, 0, 'Core zone must never see them');
+		assert.deepStrictEqual(noticeMessages().slice(noticeStart), [
+			'Dropped item is not a member of this base — no changes made',
+		]);
 	});
 
-	test('in-board Sortable drags pass through the guard', async () => {
+	test('only a genuine Sortable drag of a board element passes through', async () => {
 		const SortableMock = (await import('sortablejs')).default as any;
 		const view = mountView();
 		const core = attachCoreDropZone();
 		setDraggedFile('Projects/Project X.md', 'Project X');
+
+		// Sortable.dragged set to a NON-board element (Sortable assigns it on
+		// plain mousedown, before any drag exists) must NOT open the gate.
 		SortableMock.dragged = document.createElement('div');
 		try {
+			const blockedEvt = dispatchDragEvent(view, 'drop');
+			assert.ok(blockedEvt.defaultPrevented, 'Non-board Sortable.dragged must not pass');
+			assert.strictEqual(core.dropHandled, 0);
+
+			// A dragged element carrying a board class is a genuine card drag.
+			const cardEl = document.createElement('div');
+			cardEl.className = CSS_CLASSES.CARD;
+			SortableMock.dragged = cardEl;
 			const noticeStart = noticeMessages().length;
-			const dropEvt = dispatchDragEvent(view, 'drop');
-			assert.ok(!dropEvt.defaultPrevented, 'Guard must ignore Sortable card drags');
+			const passEvt = dispatchDragEvent(view, 'drop');
+			assert.ok(!passEvt.defaultPrevented, 'Guard must ignore genuine Sortable card drags');
 			assert.strictEqual(core.dropHandled, 1);
 			assert.deepStrictEqual(noticeMessages().slice(noticeStart), []);
 		} finally {
 			SortableMock.dragged = null;
 		}
+	});
+
+	test('native drags starting on links inside the board are cancelled at dragstart', () => {
+		const view = mountView();
+		const board = view.containerEl.querySelector('.obk-board') as HTMLElement;
+		const linkEl = document.createElement('a');
+		board.appendChild(linkEl);
+
+		const anchorDragStart = dispatchDragEvent(view, 'dragstart', linkEl);
+		assert.ok(anchorDragStart.defaultPrevented, 'Anchor-origin drags must be cancelled at the source');
+
+		const cardDragStart = dispatchDragEvent(view, 'dragstart', board);
+		assert.ok(!cardDragStart.defaultPrevented, 'Non-anchor dragstarts (Sortable card drags) stay untouched');
 	});
 
 	test('strictMembership: false restores core drop-to-add behavior', () => {
@@ -4252,6 +4282,42 @@ describe('External drop guard (strict membership)', () => {
 
 		assert.ok(!dropEvt.defaultPrevented, 'Guard must stand down when the toggle is off');
 		assert.strictEqual(core.dropHandled, 1, 'Core zone handles the drop as upstream');
+		assert.deepStrictEqual(noticeMessages().slice(noticeStart), []);
+	});
+
+	test('drops on view chrome outside the plugin container are intercepted too', () => {
+		// Core's drop zone is the whole .bases-view ancestor: a drop on chrome
+		// that is inside .bases-view but outside the plugin's own elements
+		// (toolbar strip, container padding, areas exposed by collapsed lanes)
+		// must still be blocked.
+		const view = mountView();
+		const chromeEl = basesViewEl.createDiv({ cls: 'fake-view-chrome' });
+		const core = attachCoreDropZone();
+		setDraggedFile('Projects/Project X.md', 'Project X');
+		const noticeStart = noticeMessages().length;
+
+		const dropEvt = dispatchDragEvent(view, 'drop', chromeEl);
+
+		assert.ok(dropEvt.defaultPrevented, 'Chrome drop must be claimed by the guard');
+		assert.strictEqual(core.dropHandled, 0, 'Core zone must not see chrome drops');
+		assert.deepStrictEqual(noticeMessages().slice(noticeStart), [
+			'Project X is not a member of this base — no changes made',
+		]);
+	});
+
+	test('onunload removes the guard from the shared .bases-view ancestor', () => {
+		// The ancestor outlives the view (core swaps view estates inside it), so
+		// the guard must not linger after the view is unloaded.
+		const view = mountView();
+		const core = attachCoreDropZone();
+		setDraggedFile('Projects/Project X.md', 'Project X');
+
+		(view as any).onunload();
+		const noticeStart = noticeMessages().length;
+		const dropEvt = dispatchDragEvent(view, 'drop');
+
+		assert.ok(!dropEvt.defaultPrevented, 'Detached guard must not touch events');
+		assert.strictEqual(core.dropHandled, 1, 'Events flow to core again after unload');
 		assert.deepStrictEqual(noticeMessages().slice(noticeStart), []);
 	});
 });

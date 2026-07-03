@@ -11,11 +11,13 @@
 >    values (plus the group-by value) as `data-prop-<name>` attributes so CSS
 >    snippets can style cards by value, e.g.
 >    `.obk-card[data-prop-priority="High"] { border-color: red; }`.
-> 3. **Strict membership (default on)**: dropping a note or file that is not
->    a member of the base onto the board no longer rewrites its properties to
->    match the base's filters (an Obsidian core Bases behavior) — the drop is
->    blocked with a Notice. Toggle the `Strict membership` view option off to
->    restore core's drop-to-add.
+> 3. **Strict membership (default on)**: Obsidian core rewrites a dropped
+>    note's properties to match the base's filters (drop-to-add). This fork
+>    blocks every external drop onto the view with a Notice instead — only
+>    the board's own card/column/lane drags pass — and disables dragging
+>    links out of cards (the gesture is indistinguishable from a card drag).
+>    Toggle the `Strict membership` view option off to restore core's
+>    drop-to-add.
 > 4. **Swimlane header links (default on)**: a lane title links to its hub
 >    note (e.g. the account page whose frontmatter matches the lane value)
 >    when one resolves.
