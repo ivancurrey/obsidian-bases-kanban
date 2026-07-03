@@ -1,6 +1,9 @@
 import type { BasesEntry } from 'obsidian';
+import { setIcon } from 'obsidian';
 import { COLOR_PALETTE, CSS_CLASSES, DATA_ATTRIBUTES } from '../constants.ts';
 import { createCard, computeCardFingerprint, type CardRenderCtx, type CardCallbacks } from './card.ts';
+
+export type ColumnButtonMode = 'color' | 'complete-all';
 
 export interface ColumnRenderCtx {
 	doc: Document;
@@ -13,6 +16,7 @@ export interface ColumnRenderCtx {
 	// persist only because they're saved in columnOrder, so they get a remove
 	// button. Board-wide, so it can't be derived from a single column's entries.
 	globallyEmptyColumns: Set<string>;
+	columnButtonMode: ColumnButtonMode;
 }
 
 export interface ColumnCallbacks {
@@ -21,6 +25,12 @@ export interface ColumnCallbacks {
 	onRemoveColumn: (columnValue: string, columnEl: HTMLElement) => void;
 	createAddButton: (columnValue: string, swimlaneValue: string | null) => HTMLElement;
 	getQuickAddFolder: () => string | null;
+	onMarkColumnDone: (columnValue: string, swimlaneValue: string | null, columnEl: HTMLElement) => void;
+}
+
+/** The column a "mark all done" action targets — no button is offered there. */
+export function isDoneColumnValue(value: string): boolean {
+	return value.trim().toLowerCase() === 'done';
 }
 
 export function applyColumnColor(columnEl: HTMLElement, colorName: string | null): void {
@@ -71,13 +81,28 @@ export function createColumn(
 	const dragHandle = headerEl.createDiv({ cls: CSS_CLASSES.COLUMN_DRAG_HANDLE });
 	dragHandle.textContent = '⋮⋮';
 
-	const colorBtn = headerEl.createDiv({ cls: CSS_CLASSES.COLUMN_COLOR_BTN });
-	colorBtn.setAttribute('aria-label', `Set color for column: ${value}`);
-	colorBtn.setAttribute('role', 'button');
-	colorBtn.addEventListener('click', (e) => {
-		e.stopPropagation();
-		cb.onColorPickerClick(colorBtn, columnEl, value);
-	});
+	// The header button slot is either the upstream color picker or, in
+	// complete-all mode (fork default), a "mark every card in this cell done"
+	// action. The done column itself gets neither — marking done cards done is
+	// a no-op.
+	if (ctx.columnButtonMode === 'color') {
+		const colorBtn = headerEl.createDiv({ cls: CSS_CLASSES.COLUMN_COLOR_BTN });
+		colorBtn.setAttribute('aria-label', `Set color for column: ${value}`);
+		colorBtn.setAttribute('role', 'button');
+		colorBtn.addEventListener('click', (e) => {
+			e.stopPropagation();
+			cb.onColorPickerClick(colorBtn, columnEl, value);
+		});
+	} else if (!isDoneColumnValue(value)) {
+		const doneBtn = headerEl.createDiv({ cls: CSS_CLASSES.COLUMN_DONE_BTN });
+		doneBtn.setAttribute('aria-label', `Mark all cards in ${value} done`);
+		doneBtn.setAttribute('role', 'button');
+		setIcon(doneBtn, 'check-check');
+		doneBtn.addEventListener('click', (e) => {
+			e.stopPropagation();
+			cb.onMarkColumnDone(value, options.swimlaneValue ?? null, columnEl);
+		});
+	}
 
 	headerEl.createSpan({ text: value, cls: CSS_CLASSES.COLUMN_TITLE });
 	headerEl.createSpan({ text: `${entries.length}`, cls: CSS_CLASSES.COLUMN_COUNT });

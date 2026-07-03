@@ -388,6 +388,35 @@
 	border-radius: 12px;
 }
 
+/* Mark-column-done button (complete-all mode) shares the add/remove look */
+.obk-column-done-btn {
+	width: 24px;
+	height: 24px;
+	border-radius: 4px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--text-muted);
+	cursor: pointer;
+	flex-shrink: 0;
+	opacity: 0.55;
+	transition:
+		background 0.1s ease,
+		color 0.1s ease,
+		opacity 0.1s ease;
+	--icon-size: var(--icon-s);
+}
+
+.obk-column:hover .obk-column-done-btn,
+.obk-column-done-btn:focus-visible {
+	opacity: 1;
+}
+
+.obk-column-done-btn:hover {
+	color: var(--color-green);
+	background: var(--background-modifier-hover);
+}
+
 .obk-column-add-btn,
 .obk-column-remove-btn {
 	width: 24px;

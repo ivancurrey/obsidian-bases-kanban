@@ -16,10 +16,13 @@ import {
 import {
 	applyColumnColor as applyColumnColorEl,
 	createColumn as createColumnEl,
+	isDoneColumnValue as isDoneColumnValueEl,
 	patchColumnCards as patchColumnCardsEl,
+	type ColumnButtonMode,
 	type ColumnRenderCtx,
 	type ColumnCallbacks,
 } from './components/column.ts';
+import { ConfirmModal } from './confirmModal.ts';
 import {
 	buildSwimlaneElement as buildSwimlaneElementEl,
 	updateSwimlaneToggle as updateSwimlaneToggleEl,
@@ -142,6 +145,7 @@ export class KanbanView extends BasesView {
 	private _lastSwimlanePropertyId: BasesPropertyId | null | undefined = undefined;
 	private _lastQuickAddFolder: string | null | undefined = undefined;
 	private _lastLaneHeaderLinks: boolean | undefined = undefined;
+	private _lastColumnButtonMode: ColumnButtonMode | undefined = undefined;
 	private _cardFingerprints: Map<string, string> = new Map();
 	// Column values empty across the whole board (every swimlane). Recomputed each
 	// render() and read via _buildColumnCtx so components can show a remove button
@@ -517,6 +521,10 @@ export class KanbanView extends BasesView {
 			const laneHeaderLinksChanged = currentLaneHeaderLinks !== this._lastLaneHeaderLinks;
 			this._lastLaneHeaderLinks = currentLaneHeaderLinks;
 
+			const currentColumnButtonMode = this.getColumnButtonMode();
+			const columnButtonModeChanged = currentColumnButtonMode !== this._lastColumnButtonMode;
+			this._lastColumnButtonMode = currentColumnButtonMode;
+
 			const existingBoard = this.containerEl.querySelector<HTMLElement>(`.${CSS_CLASSES.BOARD}`);
 			const optionsChanged =
 				orderChanged ||
@@ -527,7 +535,8 @@ export class KanbanView extends BasesView {
 				imageAspectRatioChanged ||
 				swimlanePropertyChanged ||
 				quickAddFolderChanged ||
-				laneHeaderLinksChanged;
+				laneHeaderLinksChanged ||
+				columnButtonModeChanged;
 
 			const lanes = new Map<string | null, Map<string, BasesEntry[]>>();
 			if (groupedByLane) {
@@ -1107,6 +1116,7 @@ export class KanbanView extends BasesView {
 			dragging: this._dragging,
 			cardFingerprints: this._cardFingerprints,
 			globallyEmptyColumns: this._globallyEmptyColumns,
+			columnButtonMode: this.getColumnButtonMode(),
 		};
 	}
 
@@ -1117,6 +1127,7 @@ export class KanbanView extends BasesView {
 			onRemoveColumn: (val, el) => this.removeColumn(val, el),
 			createAddButton: (colVal, laneVal) => this.createAddButton(colVal, laneVal),
 			getQuickAddFolder: () => this.getQuickAddFolder(),
+			onMarkColumnDone: (colVal, laneVal, colEl) => this.confirmMarkColumnDone(colVal, laneVal, colEl),
 		};
 	}
 
@@ -1439,24 +1450,94 @@ export class KanbanView extends BasesView {
 			const swimlanePropertyName = swimlaneCrossed ? parsePropertyId(swimlanePropertyId).name : null;
 			const swimlaneValueToSet = swimlaneCrossed && newLaneValue !== UNCATEGORIZED_LABEL ? newLaneValue : '';
 
-			await this.app.fileManager.processFrontMatter(entry.file, (frontmatter: Record<string, unknown>) => {
-				if (columnValueToSet === '') {
-					delete frontmatter[columnPropertyName];
-				} else {
-					frontmatter[columnPropertyName] = columnValueToSet;
-				}
-				if (swimlanePropertyName) {
-					if (swimlaneValueToSet === '') {
-						delete frontmatter[swimlanePropertyName];
-					} else {
-						frontmatter[swimlanePropertyName] = swimlaneValueToSet;
-					}
-				}
-			});
+			await this.writeCardFrontmatter(
+				entry.file,
+				columnPropertyName,
+				columnValueToSet,
+				swimlanePropertyName,
+				swimlaneValueToSet,
+			);
 		} catch (error) {
 			console.error('Error updating entry property:', error);
 			this.render();
 		}
+	}
+
+	/**
+	 * Single write path for board-driven frontmatter changes: sets (or, for the
+	 * empty string, removes) the group-by property and optionally the swimlane
+	 * property. Used by card drops and by the mark-column-done bulk action.
+	 */
+	private async writeCardFrontmatter(
+		file: TFile,
+		columnPropertyName: string,
+		columnValueToSet: string,
+		swimlanePropertyName: string | null,
+		swimlaneValueToSet: string,
+	): Promise<void> {
+		await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
+			if (columnValueToSet === '') {
+				delete frontmatter[columnPropertyName];
+			} else {
+				frontmatter[columnPropertyName] = columnValueToSet;
+			}
+			if (swimlanePropertyName) {
+				if (swimlaneValueToSet === '') {
+					delete frontmatter[swimlanePropertyName];
+				} else {
+					frontmatter[swimlanePropertyName] = swimlaneValueToSet;
+				}
+			}
+		});
+	}
+
+	private getColumnButtonMode(): ColumnButtonMode {
+		return this.config?.get('columnColorButton') === 'color' ? 'color' : 'complete-all';
+	}
+
+	/**
+	 * Bulk action behind the per-cell check button: confirm, then move every
+	 * member card in that lane's column instance to the done column. Only notes
+	 * already on the board are written (strict-membership semantics); the write
+	 * reuses the same path as a single card drop, sequentially per note.
+	 */
+	private confirmMarkColumnDone(columnValue: string, _swimlaneValue: string | null, columnEl: HTMLElement): void {
+		if (!this.app) return;
+		const entries: BasesEntry[] = [];
+		columnEl.querySelectorAll<HTMLElement>(`.${CSS_CLASSES.CARD}`).forEach((card) => {
+			const path = card.getAttribute(DATA_ATTRIBUTES.ENTRY_PATH);
+			const entry = path ? this._entryMap.get(path) : undefined;
+			if (entry) entries.push(entry);
+		});
+		if (entries.length === 0) {
+			new Notice(`No cards to mark done in ${columnValue}`);
+			return;
+		}
+		const cardsLabel = `${entries.length} card${entries.length === 1 ? '' : 's'}`;
+		new ConfirmModal(this.app, {
+			title: 'Mark column done',
+			message: `Mark ${cardsLabel} in ${columnValue} done?`,
+			confirmLabel: 'Mark done',
+			onConfirm: () => void this.markColumnDone(entries, columnValue),
+		}).open();
+	}
+
+	private async markColumnDone(entries: BasesEntry[], columnValue: string): Promise<void> {
+		if (!this._prefsPropertyId || !this.app?.fileManager) return;
+		const columnPropertyName = parsePropertyId(this._prefsPropertyId).name;
+		// Land the cards in the board's existing done column when one exists
+		// (whatever its casing) rather than minting a new column value.
+		const doneValue = this._prefs.columnOrder.find((value) => isDoneColumnValueEl(value)) ?? 'done';
+		let updated = 0;
+		for (const entry of entries) {
+			try {
+				await this.writeCardFrontmatter(entry.file, columnPropertyName, doneValue, null, '');
+				updated++;
+			} catch (error) {
+				console.error('KanbanView: error marking card done:', entry.file.path, error);
+			}
+		}
+		new Notice(`Marked ${updated} card${updated === 1 ? '' : 's'} in ${columnValue} done`);
 	}
 
 	private isStrictMembershipEnabled(): boolean {
@@ -1719,6 +1800,13 @@ export class KanbanView extends BasesView {
 				type: 'toggle',
 				key: 'swimlaneHeaderLinks',
 				default: true,
+			},
+			{
+				displayName: 'Column header button',
+				type: 'dropdown',
+				key: 'columnColorButton',
+				default: 'complete-all',
+				options: { 'complete-all': 'Mark column done', color: 'Column color picker' },
 			},
 		];
 	}

@@ -2253,6 +2253,8 @@ describe('Column Colors', () => {
 		controller = createMockQueryController(entries, TEST_PROPERTIES);
 		controller.app = app;
 		controller.config.getAsPropertyId = () => PROPERTY_STATUS;
+		// The fork defaults the header button to complete-all; this suite tests the color mode.
+		controller.config.set('columnColorButton', 'color');
 
 		const view = new KanbanView(controller, scrollEl);
 		setupKanbanViewWithApp(view, app);
@@ -2329,6 +2331,7 @@ describe('Column Colors', () => {
 		controller = createMockQueryController(entries, TEST_PROPERTIES);
 		controller.app = app;
 		controller.config.getAsPropertyId = () => PROPERTY_STATUS;
+		controller.config.set('columnColorButton', 'color');
 
 		const view = new KanbanView(controller, scrollEl);
 		setupKanbanViewWithApp(view, app);
@@ -2350,6 +2353,7 @@ describe('Column Colors', () => {
 		controller = createMockQueryController(entries, TEST_PROPERTIES);
 		controller.app = app;
 		controller.config.getAsPropertyId = () => PROPERTY_STATUS;
+		controller.config.set('columnColorButton', 'color');
 
 		const view = new KanbanView(controller, scrollEl);
 		setupKanbanViewWithApp(view, app);
@@ -4249,5 +4253,127 @@ describe('External drop guard (strict membership)', () => {
 		assert.ok(!dropEvt.defaultPrevented, 'Guard must stand down when the toggle is off');
 		assert.strictEqual(core.dropHandled, 1, 'Core zone handles the drop as upstream');
 		assert.deepStrictEqual(noticeMessages().slice(noticeStart), []);
+	});
+});
+
+describe('Mark column done button', () => {
+	let app: any;
+
+	beforeEach(() => {
+		app = createMockApp();
+	});
+
+	function mountSwimlaneBoard(seed?: (controller: any) => void): { view: KanbanView; controller: any } {
+		const scrollEl = createDivWithMethods();
+		const entries = [
+			createMockBasesEntry(createMockTFile('Task A.md'), {
+				[PROPERTY_STATUS]: 'To Do',
+				[PROPERTY_PRIORITY]: 'High',
+			}),
+			createMockBasesEntry(createMockTFile('Task B.md'), {
+				[PROPERTY_STATUS]: 'To Do',
+				[PROPERTY_PRIORITY]: 'High',
+			}),
+			createMockBasesEntry(createMockTFile('Task C.md'), {
+				[PROPERTY_STATUS]: 'To Do',
+				[PROPERTY_PRIORITY]: 'Low',
+			}),
+			createMockBasesEntry(createMockTFile('Task D.md'), {
+				[PROPERTY_STATUS]: 'Done',
+				[PROPERTY_PRIORITY]: 'Low',
+			}),
+		];
+		const controller: any = createMockQueryController(entries, TEST_PROPERTIES);
+		controller.app = app;
+		controller.config.getAsPropertyId = (key: string) => {
+			if (key === 'groupByProperty') return PROPERTY_STATUS;
+			if (key === 'swimlaneByProperty') return PROPERTY_PRIORITY;
+			return null;
+		};
+		if (seed) seed(controller);
+		const view = new KanbanView(controller, scrollEl);
+		setupKanbanViewWithApp(view, app);
+		triggerDataUpdate(view);
+		return { view, controller };
+	}
+
+	function getCellColumn(view: KanbanView, laneValue: string, columnValue: string): HTMLElement {
+		const lane = view.containerEl.querySelector<HTMLElement>(
+			`.${CSS_CLASSES.SWIMLANE}[data-swimlane-value="${laneValue}"]`,
+		);
+		assert.ok(lane, `Expected lane ${laneValue}`);
+		const column = Array.from(lane.querySelectorAll<HTMLElement>(`.${CSS_CLASSES.COLUMN}`)).find(
+			(col) => col.getAttribute('data-column-value') === columnValue,
+		);
+		assert.ok(column, `Expected column ${columnValue} in lane ${laneValue}`);
+		return column;
+	}
+
+	async function flushAsync(): Promise<void> {
+		for (let i = 0; i < 10; i++) await Promise.resolve();
+	}
+
+	test('clicking the check button opens a confirm dialog scoped to that lane column cell', () => {
+		const { view } = mountSwimlaneBoard();
+		const column = getCellColumn(view, 'High', 'To Do');
+		const doneBtn = column.querySelector<HTMLElement>(`.${CSS_CLASSES.COLUMN_DONE_BTN}`);
+		assert.ok(doneBtn, 'Non-done columns should carry a mark-done button');
+
+		doneBtn.click();
+		const modalText = document.body.querySelector('.modal-container .modal-content p')?.textContent;
+		assert.strictEqual(modalText, 'Mark 2 cards in To Do done?', 'Count is scoped to the lane cell, not the board');
+		(document.body.querySelector('.modal-container button:not(.mod-cta)') as HTMLElement).click();
+	});
+
+	test('confirming writes the group-by property of every card in the cell and reuses the existing done column casing', async () => {
+		const { view } = mountSwimlaneBoard();
+		const noticeStart = noticeMessages().length;
+		const column = getCellColumn(view, 'High', 'To Do');
+		column.querySelector<HTMLElement>(`.${CSS_CLASSES.COLUMN_DONE_BTN}`)?.click();
+
+		(document.body.querySelector('.modal-container button.mod-cta') as HTMLElement).click();
+		await flushAsync();
+
+		const calls = app.fileManager.processFrontMatter.calls;
+		assert.strictEqual(calls.length, 2, 'Exactly the two cards in High/To Do are written');
+		const writtenPaths = calls.map((call: any[]) => call[0].path).sort();
+		assert.deepStrictEqual(writtenPaths, ['Task A.md', 'Task B.md']);
+		for (const call of calls) {
+			const frontmatter: Record<string, unknown> = { status: 'To Do', priority: 'High' };
+			call[1](frontmatter);
+			assert.strictEqual(frontmatter.status, 'Done', 'Existing Done column casing is reused');
+		}
+		assert.deepStrictEqual(noticeMessages().slice(noticeStart), ['Marked 2 cards in To Do done']);
+	});
+
+	test('cancelling writes nothing', () => {
+		const { view } = mountSwimlaneBoard();
+		const noticeStart = noticeMessages().length;
+		const column = getCellColumn(view, 'High', 'To Do');
+		column.querySelector<HTMLElement>(`.${CSS_CLASSES.COLUMN_DONE_BTN}`)?.click();
+
+		(document.body.querySelector('.modal-container button:not(.mod-cta)') as HTMLElement).click();
+
+		assert.strictEqual(app.fileManager.processFrontMatter.calls.length, 0);
+		assert.deepStrictEqual(noticeMessages().slice(noticeStart), []);
+		assert.strictEqual(document.body.querySelector('.modal-container'), null, 'Dialog closes on cancel');
+	});
+
+	test('the done column itself offers no mark-done button', () => {
+		const { view } = mountSwimlaneBoard();
+		const doneColumn = getCellColumn(view, 'Low', 'Done');
+		assert.strictEqual(doneColumn.querySelector(`.${CSS_CLASSES.COLUMN_DONE_BTN}`), null);
+		assert.strictEqual(
+			doneColumn.querySelector(`.${CSS_CLASSES.COLUMN_COLOR_BTN}`),
+			null,
+			'No color button either in complete-all mode',
+		);
+	});
+
+	test('columnColorButton: color restores the upstream color picker', () => {
+		const { view } = mountSwimlaneBoard((c) => c.config.set('columnColorButton', 'color'));
+		const column = getCellColumn(view, 'High', 'To Do');
+		assert.ok(column.querySelector(`.${CSS_CLASSES.COLUMN_COLOR_BTN}`), 'Color picker button returns');
+		assert.strictEqual(column.querySelector(`.${CSS_CLASSES.COLUMN_DONE_BTN}`), null);
 	});
 });

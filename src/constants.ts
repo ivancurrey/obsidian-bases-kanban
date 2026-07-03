@@ -80,6 +80,7 @@ export const CSS_CLASSES = {
 	COLUMN_DRAGGING: 'obk-column-dragging',
 	COLUMN_GHOST: 'obk-column-ghost',
 	COLUMN_ADD_BTN: 'obk-column-add-btn',
+	COLUMN_DONE_BTN: 'obk-column-done-btn',
 
 	// Card
 	CARD: 'obk-card',
