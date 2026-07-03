@@ -52,6 +52,23 @@ export interface LegacyData {
 	columnColors: Record<string, Record<string, string>>;
 }
 
+/**
+ * Minimal shape of app.dragManager.draggable (private API) — the payload
+ * Obsidian attaches to drags started inside the app (file explorer, links,
+ * tab headers, bookmarks).
+ */
+interface DragManagerDraggable {
+	type?: string;
+	title?: string;
+	file?: { path: string; basename: string };
+	files?: Array<{ path: string; basename: string }>;
+	items?: Array<{ item?: { type?: string; path?: string } }>;
+}
+
+function isDragManagerDraggable(value: unknown): value is DragManagerDraggable {
+	return isRecord(value) && typeof value.type === 'string';
+}
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null;
 }
@@ -195,6 +212,19 @@ export class KanbanView extends BasesView {
 			const sourcePath = cardEl.instanceOf(HTMLElement) ? (cardEl.getAttribute(DATA_ATTRIBUTES.ENTRY_PATH) ?? '') : '';
 			this.triggerHoverPreview(href, sourcePath, evt, linkEl);
 		});
+
+		// Guard against Obsidian core's Bases drop zone: the surrounding
+		// `.bases-view` container treats any dropped file/link/bookmark drag as
+		// "add to base" and rewrites the dropped note's frontmatter to satisfy
+		// the base's filters (it can even move the file into a filter-implied
+		// folder). On a kanban that is far too easy to trigger by accident.
+		// Core's DragManager skips events whose default is already prevented,
+		// so claiming external drags here (scrollEl is a descendant of the drop
+		// zone) neutralizes the write. See handleExternalDrag.
+		const dragGuard = (evt: DragEvent) => this.handleExternalDrag(evt, false);
+		this.scrollEl.addEventListener('dragover', dragGuard);
+		this.scrollEl.addEventListener('dragenter', dragGuard);
+		this.scrollEl.addEventListener('drop', (evt: DragEvent) => this.handleExternalDrag(evt, true));
 
 		this._debouncedRender = debounce(() => {
 			try {
@@ -1364,6 +1394,70 @@ export class KanbanView extends BasesView {
 		}
 	}
 
+	private isStrictMembershipEnabled(): boolean {
+		return this.config?.get('strictMembership') !== false;
+	}
+
+	private getDragManagerDraggable(): DragManagerDraggable | null {
+		const app: unknown = this.app;
+		if (!isRecord(app) || !isRecord(app.dragManager)) return null;
+		const draggable: unknown = app.dragManager.draggable;
+		return isDragManagerDraggable(draggable) ? draggable : null;
+	}
+
+	/**
+	 * Resolve an in-app drag payload to note references, or null when the drag
+	 * is not a file-ish drag (text selections, tab drags, …) and should be
+	 * left alone. Mirrors the drag types Obsidian core's bases drop zone acts on.
+	 */
+	private getDraggedNoteRefs(draggable: DragManagerDraggable | null): Array<{ path: string; basename: string }> | null {
+		if (!draggable || typeof draggable.type !== 'string') return null;
+		switch (draggable.type) {
+			case 'file':
+			case 'link':
+				return draggable.file ? [draggable.file] : [];
+			case 'files':
+				return draggable.files ?? [];
+			case 'bookmarks':
+				return (draggable.items ?? [])
+					.map((wrapper) => wrapper.item)
+					.filter((item): item is { type?: string; path: string } => item?.type === 'file' && !!item.path)
+					.map((item) => ({ path: item.path, basename: item.path.split('/').pop()?.replace(/\.md$/i, '') ?? item.path }));
+			default:
+				return null;
+		}
+	}
+
+	/**
+	 * Strict membership guard. Obsidian core's bases drop zone (on the
+	 * ancestor `.bases-view` element) rewrites a dropped note's frontmatter to
+	 * satisfy the base's filters. When strict membership is enabled (default),
+	 * external note/file drags over the board are claimed here instead: core's
+	 * DragManager skips events whose default is already prevented, so nothing
+	 * gets written. In-board Sortable drags (cards, columns, lanes) and
+	 * non-file drags pass through untouched.
+	 */
+	private handleExternalDrag(evt: DragEvent, isDrop: boolean): void {
+		if (!this.isStrictMembershipEnabled()) return;
+		if (Sortable.dragged) return; // in-board card/column/lane drag
+		const noteRefs = this.getDraggedNoteRefs(this.getDragManagerDraggable());
+		const osFiles = evt.dataTransfer && Array.from(evt.dataTransfer.types ?? []).includes('Files');
+		if (noteRefs === null && !osFiles) return; // not a drag core would act on
+
+		evt.preventDefault();
+		evt.stopPropagation();
+		if (!isDrop) return;
+
+		const refs = noteRefs ?? [];
+		const nonMember = refs.find((ref) => !this._entryMap.has(ref.path));
+		if (refs.length > 0 && !nonMember) {
+			new Notice(`${refs[0].basename} is already on this board — drag its card to move it`);
+			return;
+		}
+		const name = nonMember?.basename ?? evt.dataTransfer?.files?.[0]?.name ?? 'Dropped file';
+		new Notice(`${name} is not a member of this base — no changes made`);
+	}
+
 	private findCardEl(path: string): HTMLElement | null {
 		return (
 			Array.from(this.containerEl.querySelectorAll<HTMLElement>(`.${CSS_CLASSES.CARD}`)).find(
@@ -1548,6 +1642,12 @@ export class KanbanView extends BasesView {
 				displayName: 'Wrap property values',
 				type: 'toggle',
 				key: 'wrapPropertyValues',
+			},
+			{
+				displayName: 'Strict membership (block drops of outside notes)',
+				type: 'toggle',
+				key: 'strictMembership',
+				default: true,
 			},
 		];
 	}

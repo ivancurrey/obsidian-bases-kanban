@@ -4102,3 +4102,152 @@ describe('patchColumnCards - property value reactivity', () => {
 		assert.strictEqual(countEl?.textContent, '1', 'Column count should remain 1 after a property-only update');
 	});
 });
+
+describe('External drop guard (strict membership)', () => {
+	let scrollEl: HTMLElement;
+	let basesViewEl: HTMLElement;
+	let controller: any;
+	let app: any;
+
+	beforeEach(() => {
+		app = createMockApp();
+	});
+
+	function mountView(seed?: (controller: any) => void): KanbanView {
+		// Core renders every Bases view inside a `.bases-view` container that
+		// carries the drop zone; model that ancestor relationship here.
+		basesViewEl = document.createElement('div');
+		scrollEl = createDivWithMethods();
+		basesViewEl.appendChild(scrollEl);
+		controller = createMockQueryController(createEntriesWithStatus(), TEST_PROPERTIES);
+		controller.app = app;
+		controller.config.getAsPropertyId = () => PROPERTY_STATUS;
+		if (seed) seed(controller);
+		const view = new KanbanView(controller, scrollEl);
+		setupKanbanViewWithApp(view, app);
+		triggerDataUpdate(view);
+		return view;
+	}
+
+	/**
+	 * Mirrors Obsidian core's DragManager.handleDrop contract on the
+	 * `.bases-view` ancestor: bubble-phase listeners that skip any event whose
+	 * default has already been prevented. When the real handler runs for a
+	 * file/link/bookmark drag it rewrites the dropped note's frontmatter to
+	 * satisfy the base's filters.
+	 */
+	function attachCoreDropZone(): { dropHandled: number } {
+		const seen = { dropHandled: 0 };
+		basesViewEl.addEventListener('drop', (evt) => {
+			if (!evt.defaultPrevented) seen.dropHandled++;
+		});
+		return seen;
+	}
+
+	function dispatchDragEvent(view: KanbanView, type: string): Event {
+		const evt = new (window as any).Event(type, { bubbles: true, cancelable: true });
+		const board = view.containerEl.querySelector('.obk-board') as HTMLElement;
+		assert.ok(board, 'Board should exist');
+		board.dispatchEvent(evt);
+		return evt;
+	}
+
+	function setDraggedFile(path: string, basename: string): void {
+		app.dragManager = { draggable: { type: 'file', title: basename, file: { path, basename } } };
+	}
+
+	test('dropping a non-member note is blocked before core rewrites its properties', () => {
+		const view = mountView();
+		const core = attachCoreDropZone();
+		setDraggedFile('Projects/Project X.md', 'Project X');
+		const noticeStart = noticeMessages().length;
+
+		const overEvt = dispatchDragEvent(view, 'dragover');
+		assert.ok(overEvt.defaultPrevented, 'dragover should be claimed by the guard');
+
+		const dropEvt = dispatchDragEvent(view, 'drop');
+		assert.ok(dropEvt.defaultPrevented, 'drop default should be prevented');
+		assert.strictEqual(core.dropHandled, 0, 'Core bases drop zone must never see the drop');
+		assert.deepStrictEqual(noticeMessages().slice(noticeStart), [
+			'Project X is not a member of this base — no changes made',
+		]);
+	});
+
+	test('dropping a note that is already a board member is blocked with a distinct notice', () => {
+		const view = mountView();
+		const core = attachCoreDropZone();
+		setDraggedFile('Task 1.md', 'Task 1');
+		const noticeStart = noticeMessages().length;
+
+		dispatchDragEvent(view, 'dragover');
+		dispatchDragEvent(view, 'drop');
+
+		assert.strictEqual(core.dropHandled, 0, 'Member drops are blocked too (core may still move the file)');
+		assert.deepStrictEqual(noticeMessages().slice(noticeStart), [
+			'Task 1 is already on this board — drag its card to move it',
+		]);
+	});
+
+	test('OS file drags (dataTransfer files) are blocked with a notice', () => {
+		const view = mountView();
+		const core = attachCoreDropZone();
+		app.dragManager = { draggable: null };
+		const noticeStart = noticeMessages().length;
+
+		const evt = new (window as any).Event('drop', { bubbles: true, cancelable: true });
+		Object.defineProperty(evt, 'dataTransfer', {
+			value: { types: ['Files'], files: [{ name: 'report.pdf' }] },
+		});
+		const board = view.containerEl.querySelector('.obk-board') as HTMLElement;
+		board.dispatchEvent(evt);
+
+		assert.ok(evt.defaultPrevented, 'OS file drop should be blocked');
+		assert.strictEqual(core.dropHandled, 0);
+		assert.deepStrictEqual(noticeMessages().slice(noticeStart), [
+			'report.pdf is not a member of this base — no changes made',
+		]);
+	});
+
+	test('non-file drags (e.g. text selection) pass through untouched', () => {
+		const view = mountView();
+		const core = attachCoreDropZone();
+		app.dragManager = { draggable: null };
+		const noticeStart = noticeMessages().length;
+
+		const dropEvt = dispatchDragEvent(view, 'drop');
+
+		assert.ok(!dropEvt.defaultPrevented, 'Guard must not claim non-file drags');
+		assert.strictEqual(core.dropHandled, 1, 'Event reaches the core zone unchanged');
+		assert.deepStrictEqual(noticeMessages().slice(noticeStart), []);
+	});
+
+	test('in-board Sortable drags pass through the guard', async () => {
+		const SortableMock = (await import('sortablejs')).default as any;
+		const view = mountView();
+		const core = attachCoreDropZone();
+		setDraggedFile('Projects/Project X.md', 'Project X');
+		SortableMock.dragged = document.createElement('div');
+		try {
+			const noticeStart = noticeMessages().length;
+			const dropEvt = dispatchDragEvent(view, 'drop');
+			assert.ok(!dropEvt.defaultPrevented, 'Guard must ignore Sortable card drags');
+			assert.strictEqual(core.dropHandled, 1);
+			assert.deepStrictEqual(noticeMessages().slice(noticeStart), []);
+		} finally {
+			SortableMock.dragged = null;
+		}
+	});
+
+	test('strictMembership: false restores core drop-to-add behavior', () => {
+		const view = mountView((c) => c.config.set('strictMembership', false));
+		const core = attachCoreDropZone();
+		setDraggedFile('Projects/Project X.md', 'Project X');
+		const noticeStart = noticeMessages().length;
+
+		const dropEvt = dispatchDragEvent(view, 'drop');
+
+		assert.ok(!dropEvt.defaultPrevented, 'Guard must stand down when the toggle is off');
+		assert.strictEqual(core.dropHandled, 1, 'Core zone handles the drop as upstream');
+		assert.deepStrictEqual(noticeMessages().slice(noticeStart), []);
+	});
+});
