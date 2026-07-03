@@ -1,9 +1,9 @@
 {
-	"id": "kanban-bases-view",
-	"name": "Kanban Bases View",
-	"version": "0.10.2",
+	"id": "kanban-bases-view-sb",
+	"name": "Kanban Bases View (SB fork)",
+	"version": "0.11.0",
 	"minAppVersion": "1.10.2",
-	"description": "A kanban-style drag-and-drop custom view for Bases.",
+	"description": "A kanban-style drag-and-drop custom view for Bases. Fork maintained by ivancurrey.",
 	"author": "I. Welch Canavan",
 	"authorUrl": "https://welchcanavan.com",
 	"isDesktopOnly": false

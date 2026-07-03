@@ -1,5 +1,21 @@
 # Kanban Bases View Plugin for Obsidian
 
+> **SB fork notice** — this is a fork of
+> [xiwcx/obsidian-bases-kanban](https://github.com/xiwcx/obsidian-bases-kanban)
+> (plugin id `kanban-bases-view-sb`) that diverges in two ways:
+>
+> 1. **Collapse hides the lane**: the swimlane Collapse/Expand toggle hides
+>    the lane body entirely, leaving only the header — upstream caps the lane
+>    at a fixed height, which is invisible for short lanes.
+> 2. **`data-prop-*` attributes**: each card exposes its visible property
+>    values (plus the group-by value) as `data-prop-<name>` attributes so CSS
+>    snippets can style cards by value, e.g.
+>    `.obk-card[data-prop-priority="High"] { border-color: red; }`.
+>
+> The registered Bases view type (`kanban-view`) is unchanged, so existing
+> `.base` files keep working. All credit to I. Welch Canavan; the MIT license
+> is preserved.
+
 A kanban-style drag-and-drop custom view for Obsidian Bases that allows you to organize your notes into columns based on any property.
 
 ## Demo
