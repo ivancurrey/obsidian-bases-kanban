@@ -2,7 +2,7 @@
 
 > **SB fork notice** — this is a fork of
 > [xiwcx/obsidian-bases-kanban](https://github.com/xiwcx/obsidian-bases-kanban)
-> (plugin id `kanban-bases-view-sb`) that diverges in two ways:
+> (plugin id `kanban-bases-view-sb`) that diverges in five ways:
 >
 > 1. **Collapse hides the lane**: the swimlane Collapse/Expand toggle hides
 >    the lane body entirely, leaving only the header — upstream caps the lane
@@ -11,6 +11,19 @@
 >    values (plus the group-by value) as `data-prop-<name>` attributes so CSS
 >    snippets can style cards by value, e.g.
 >    `.obk-card[data-prop-priority="High"] { border-color: red; }`.
+> 3. **Strict membership (default on)**: dropping a note or file that is not
+>    a member of the base onto the board no longer rewrites its properties to
+>    match the base's filters (an Obsidian core Bases behavior) — the drop is
+>    blocked with a Notice. Toggle the `Strict membership` view option off to
+>    restore core's drop-to-add.
+> 4. **Swimlane header links (default on)**: a lane title links to its hub
+>    note (e.g. the account page whose frontmatter matches the lane value)
+>    when one resolves.
+> 5. **Mark column done button (default on)**: the per-column color picker is
+>    replaced by a check button that, after confirmation, moves every card in
+>    that lane's column cell to the done column. Set the `Column header
+>    button` view option to `Column color picker` to restore the upstream
+>    picker.
 >
 > The registered Bases view type (`kanban-view`) is unchanged, so existing
 > `.base` files keep working. All credit to I. Welch Canavan; the MIT license
